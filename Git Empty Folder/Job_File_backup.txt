@@ -1,0 +1,156 @@
+# MM_SDE_S3
+import sys
+from awsglue.transforms import *
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from awsglue import DynamicFrame
+
+# REDSHIFT TARGET CREDENTIALS
+REDSHIFT_CREDS = {
+    "redshift_jdbc_url" : "jdbc:redshift://ebsanalytics-nonprod.238610048260.us-east-1.redshift-serverless.amazonaws.com:5439/dev",
+    "redshift_username" : "moodmedia2022",
+    "redshift_password" : "MoodMedia1960"
+}
+
+def load_data(table_name, file_path):
+    src_excel_file_df = glueContext.create_dynamic_frame_from_options(
+        connection_type = "s3", 
+        connection_options = {"paths": [file_path]},
+        format = "csv",
+        format_options = {"withHeader": True}
+    )
+    # src_df = spark.read.format('csv').option("quote", "\"").option("escape", "\"").option("header", "true").option("inferSchema", "true").load(file_path)
+    # src_df = spark.read.format('csv').option("encoding", "UTF-8").option("quote", "\"").option("escape", "\"").load(file_path)
+    # src_excel_file_df = DynamicFrame.fromDF(src_df, glueContext, "sql_extract_query_df")
+    
+    pre_query = f"""truncate table {table_name}"""
+    tgt_df = glueContext.write_dynamic_frame.from_options(
+        frame = src_excel_file_df,
+        connection_type = 'redshift',
+        connection_options = {
+            "url": REDSHIFT_CREDS['redshift_jdbc_url'],
+            "user": REDSHIFT_CREDS['redshift_username'],
+            "password": REDSHIFT_CREDS['redshift_password'],
+            "dbtable": f"{table_name}",
+            "preactions": pre_query,
+            "redshiftTmpDir": args["TempDir"]
+        },
+        transformation_ctx = "tgt_df"
+    )
+    print(f"::-->> Data loaded into {table_name} Successfully!!!")
+
+args = getResolvedOptions(sys.argv, ["JOB_NAME"])
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+job.init(args["JOB_NAME"], args)
+
+# s3_paths = [
+# ('xxods.customer_subtype_segment_lookup_stg', 's3://s3bck-external-source-files/analytics-lookup-files/Customer_Subtype_Segment_Lookups.csv'),
+# ('xxods.customer_type_group_lookup_stg', 's3://s3bck-external-source-files/analytics-lookup-files/Customer_Type_Group_Lookups.csv')]
+
+s3_paths = [('xxdev.mm_staff_accounts_groups_stg','s3://s3bck-external-source-files/analytics-servicecloud-files/Test_Folder/Staff_Accounts_Groups__TableTemplate_and_Data.csv')]
+
+for table_name, file_path in s3_paths:
+    print('table_name:',table_name)
+    print('file_path:',file_path)
+    load_data(table_name, file_path)
+
+    
+job.commit()
+-----------------------------------------------
+-----------------------------------------------
+#MM_SDE_SC_S3
+import sys
+from awsglue.transforms import *
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.job import Job
+import boto3
+
+# REDSHIFT TARGET CREDENTIALS
+REDSHIFT_CREDS = {
+    "redshift_jdbc_url" : "jdbc:redshift://ebsanalytics-nonprod.238610048260.us-east-1.redshift-serverless.amazonaws.com:5439/dev",
+    "redshift_username" : "moodmedia2022",
+    "redshift_password" : "MoodMedia1960"
+}
+
+## @params: [JOB_NAME]
+args = getResolvedOptions(sys.argv, ['JOB_NAME'])
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+job.init(args['JOB_NAME'], args)
+
+def load_data(table_name, file_path):
+    src_excel_file_df = glueContext.create_dynamic_frame_from_options(
+        connection_type = "s3", 
+        connection_options = {"paths": [file_path]},
+        format = "csv",
+        format_options = {"withHeader": True}
+    )
+    pre_query = f"""truncate table {table_name}"""
+    tgt_df = glueContext.write_dynamic_frame.from_options(
+        frame = src_excel_file_df,
+        connection_type = 'redshift',
+        connection_options = {
+            "url": REDSHIFT_CREDS['redshift_jdbc_url'],
+            "user": REDSHIFT_CREDS['redshift_username'],
+            "password": REDSHIFT_CREDS['redshift_password'],
+            "dbtable": f"{table_name}",
+            "preactions": pre_query,
+            "redshiftTmpDir": args["TempDir"]
+        },
+        transformation_ctx = "tgt_df"
+    )
+    print(f"::-->> Data loaded into {table_name} Successfully!!!")
+
+bucketname = "s3bck-external-source-files"
+s3 = boto3.resource('s3')
+my_bucket = s3.Bucket(bucketname)
+source = "analytics-servicecloud-files/Test_Folder/Source_folder/"
+target = "analytics-servicecloud-files/Test_Folder/Archive_folder/"
+error = "analytics-servicecloud-files/Test_Folder/Error_Folder/"
+
+for obj in my_bucket.objects.filter(Prefix=source):
+    table_name = ''
+    print('obj:',obj)
+    count = 0
+    print('-------2------')
+    source_filename = (obj.key).split('/')[-1]
+    print('source_filename:',source_filename)
+    copy_source = {
+        'Bucket': bucketname,
+        'Key': obj.key
+    }
+    print('copy_source:',copy_source)
+    
+    
+    file_path = f"s3://{bucketname}/{obj.key}"
+    if 'staff_accounts_groups' in file_path:
+        table_name = 'xxdev.mm_staff_accounts_groups_stg'
+    if count > 0:
+        print('count:',count)
+        try:
+            load_data(table_name, file_path)    
+            target_filename = "{}{}".format(target, source_filename)
+            print('target_filename:',target_filename)
+            s3.meta.client.copy(copy_source, bucketname, target_filename)
+            s3.Object(bucketname, obj.key).delete()
+        except:
+            print(f"Failed data to load in {table_name}")
+            target_filename = "{}{}".format(error, source_filename)
+            print('target_filename:',target_filename)
+            s3.meta.client.copy(copy_source, bucketname, target_filename)
+            s3.Object(bucketname, obj.key).delete()
+    count += count  
+
+job.commit()
+
+---------------------------------------------
+---------------------------------------------
